@@ -1,3 +1,4 @@
+import audioop_shim  # Import shim FIRST to fix Python 3.14 compatibility
 import discord
 from discord.ext import commands
 import random
