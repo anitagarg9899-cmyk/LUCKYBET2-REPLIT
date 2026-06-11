@@ -54,7 +54,7 @@ def fmt(points):
     usd = points * POINTS_TO_USD
     return f"R${points:,} (≈ ${usd:.2f})"
 
-# ── Data ──────────────────────────────────────────────────────────────────────
+# ── Data ────────────────────────────────────────────────────────────────
 
 def load_data():
     if os.path.exists(DB_FILE):
@@ -141,7 +141,7 @@ def save_clans(clans):
 def send_image(buf, filename='result.png'):
     buf.seek(0); return discord.File(buf, filename=filename)
 
-# ── Rank Role Helper ──────────────────────────────────────────────────────────
+# ── Rank Role Helper ────────────────────────────────────────────────────────
 
 async def assign_rank_role(guild, user_id):
     if not guild: return
@@ -165,7 +165,7 @@ async def assign_rank_role(guild, user_id):
             try: await member.add_roles(role)
             except: pass
 
-# ── Provably Fair ─────────────────────────────────────────────────────────────
+# ── Provably Fair ─────────────────────────────────────────────────────────
 
 def generate_seeds():
     server_seed = secrets.token_hex(32)
@@ -257,7 +257,7 @@ async def send_to_history(guild, game, user_name, user_id, bet, won, profit, new
     except Exception:
         pass
 
-# ── Crash Game ────────────────────────────────────────────────────────────────
+# ── Crash Game ──────────────────────────────────────────────────────────
 
 CRASH_LOBBY_SECS = 20
 CRASH_TICK       = 1.0   # seconds between multiplier updates
@@ -448,7 +448,7 @@ async def crash_cmd(ctx, amount: str):
     else:
         await ctx.send("⏳ Please wait — wrapping up the last round.", delete_after=5)
 
-# ── Blackjack ─────────────────────────────────────────────────────────────────
+# ── Blackjack ──────────────────────────────────────────────────────────
 
 def cv(cards):
     t = sum(cards); a = cards.count(11)
@@ -508,4 +508,82 @@ class BlackjackView(discord.ui.View):
     async def double_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Not your game!", ephemeral=True); return
-        if s
+        if self.game_over: return
+        if not self.first_action:
+            await interaction.response.send_message("Can only double on first action!", ephemeral=True); return
+        if self.start_balance < self.bet:
+            await interaction.response.send_message("Insufficient balance to double!", ephemeral=True); return
+        self.first_action = False; self._disable_double()
+        self.bet *= 2
+        self.player_cards.append(self.deck.pop())
+        if cv(self.player_cards) > 21: await self._finish(interaction, bust=True)
+        else: await interaction.response.edit_message(embed=bj_embed(self.player_cards, self.dealer_cards, self.bet), view=self)
+
+    async def _finish(self, interaction: discord.Interaction, bust=False):
+        self.game_over = True; self._disable_all()
+        pv = cv(self.player_cards)
+        if bust:
+            result_str = "💥 **BUST!** You went over 21."
+            profit = -self.bet
+            won = False
+        else:
+            while cv(self.dealer_cards) < 17:
+                self.dealer_cards.append(self.deck.pop())
+            dv = cv(self.dealer_cards)
+            if dv > 21:
+                result_str = f"✅ **DEALER BUST!** You win!"
+                profit = self.bet
+                won = True
+            elif pv > dv:
+                result_str = f"✅ **YOU WIN!** {pv} vs {dv}"
+                profit = self.bet
+                won = True
+            elif pv < dv:
+                result_str = f"❌ **DEALER WINS!** {pv} vs {dv}"
+                profit = -self.bet
+                won = False
+            else:
+                result_str = f"🤝 **PUSH!** Both {pv}"
+                profit = 0
+                won = None
+
+        new_bal = self.start_balance + profit
+        set_user_balance(self.user_id, new_bal)
+        add_to_stats(self.user_id, won, self.bet)
+
+        extra = f"**Profit:** {'+' if profit >= 0 else ''}{profit:,}\n**New Balance:** {fmt(new_bal)}"
+        embed = bj_embed(self.player_cards, self.dealer_cards, self.bet, show_dealer=True, extra=extra, color=0x00FF88 if profit > 0 else 0xFF4444)
+        embed.title = "🃏  Blackjack — Game Over"
+        embed.description = result_str + "\n\n" + embed.description
+        await interaction.response.edit_message(embed=embed, view=self)
+
+@bot.event
+async def on_ready():
+    print(f"✅ Bot is ready! Logged in as {bot.user}")
+
+@bot.command(name='balance')
+async def balance(ctx):
+    bal = get_user_balance(ctx.author.id)
+    embed = discord.Embed(title="💰 Your Balance", description=fmt(bal), color=0x00FF88)
+    await ctx.send(embed=embed)
+
+@bot.command(name='addbal')
+@commands.has_permissions(administrator=True)
+async def addbal(ctx, user: discord.User, amount: int):
+    if amount <= 0:
+        await ctx.send("❌ Amount must be positive!"); return
+    old_bal = get_user_balance(user.id)
+    set_user_balance(user.id, old_bal + amount)
+    new_bal = get_user_balance(user.id)
+    embed = discord.Embed(title="✅ Balance Added", color=0x00FF88)
+    embed.add_field(name="User", value=user.mention, inline=False)
+    embed.add_field(name="Amount Added", value=fmt(amount), inline=False)
+    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    await ctx.send(embed=embed)
+
+# Bot token
+TOKEN = os.getenv('DISCORD_TOKEN', '')
+if TOKEN:
+    bot.run(TOKEN)
+else:
+    print("❌ DISCORD_TOKEN not found in environment variables!")
