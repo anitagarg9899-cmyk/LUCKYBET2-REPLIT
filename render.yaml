@@ -1,6 +1,9 @@
 services:
-  - type: worker
-    name: luckybet-bot
+  - type: web
+    name: luckybet
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
