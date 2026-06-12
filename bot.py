@@ -22,7 +22,7 @@ intents.invites = True
 
 bot = commands.Bot(command_prefix='.', intents=intents, help_command=None)
 
-DB_FILE      = 'bot/user_data.json'
+DB_FILE      = 'user_data.json'
 active_mines = {}
 active_bj    = {}
 invite_cache = {}   # guild_id -> {code: uses}
