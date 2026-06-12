@@ -2235,6 +2235,10 @@ async def help_command(ctx):
     embed.add_field(name="💱 Currency", value="R$1 = 1 point  |  R$1,000 = $3.70 USD", inline=False)
     await ctx.send(embed=embed)
 
+@bot.event
+async def on_command_error(ctx, error):
+    print(f"ERROR IN COMMAND {ctx.command}: {repr(error)}")
+    await ctx.send(f"❌ Error: {error}")
 
 if __name__ == "__main__":
     TOKEN = os.getenv('DISCORD_TOKEN')
