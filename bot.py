@@ -1423,6 +1423,52 @@ class RainView(discord.ui.View):
         pass  # handled in the command task
 
 
+class GiveawayView(discord.ui.View):
+    def __init__(self, host_id, amount, duration, req_wager, req_invites):
+        super().__init__(timeout=duration)
+        self.host_id     = host_id
+        self.amount      = amount
+        self.req_wager   = req_wager
+        self.req_invites = req_invites
+        self.entrants    = set()
+
+    @discord.ui.button(label='🎉 Enter Giveaway', style=discord.ButtonStyle.success, custom_id='giveaway_enter')
+    async def enter_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = interaction.user.id
+        if uid == self.host_id:
+            await interaction.response.send_message("❌ You can't enter your own giveaway!", ephemeral=True); return
+        if uid in self.entrants:
+            await interaction.response.send_message("✅ You're already entered — good luck! 🍀", ephemeral=True); return
+
+        data, ukey = get_user(uid)
+        ud = data[ukey]
+
+        if self.req_wager > 0:
+            tw = ud['stats'].get('total_wagered', 0)
+            if tw < self.req_wager:
+                await interaction.response.send_message(
+                    f"❌ **Requirement not met!**\n"
+                    f"Need **R${self.req_wager:,}** total wagered.\n"
+                    f"Your total: **R${tw:,}**", ephemeral=True); return
+
+        if self.req_invites > 0:
+            ti = ud.get('total_invites', 0)
+            if ti < self.req_invites:
+                await interaction.response.send_message(
+                    f"❌ **Requirement not met!**\n"
+                    f"Need **{self.req_invites}** total invite{'s' if self.req_invites != 1 else ''}.\n"
+                    f"Your total: **{ti}**", ephemeral=True); return
+
+        self.entrants.add(uid)
+        count = len(self.entrants)
+        await interaction.response.send_message(
+            f"🎉 You're entered! **{count}** entr{'ies' if count != 1 else 'y'} so far. Good luck!",
+            ephemeral=True)
+
+    async def on_timeout(self):
+        pass  # handled in the command task
+
+
 @bot.command(name='rain')
 async def rain(ctx, amount: str):
     bal = get_user_balance(ctx.author.id)
@@ -1510,6 +1556,130 @@ async def rain(ctx, amount: str):
     embed.set_footer(text=f"Each player received R${share:,}")
     try: await msg.edit(embed=embed, view=view)
     except: pass
+
+
+@bot.command(name='giveaway', aliases=['gw'])
+@commands.has_permissions(administrator=True)
+async def giveaway(ctx, amount: str = None, minutes: str = None, *args):
+    if not amount or not minutes:
+        await ctx.send(
+            "❌ Usage: `.giveaway <amount> <minutes> [wager:<min>] [invites:<min>]`\n"
+            "Example: `.giveaway 5000 10 wager:10000 invites:2`"); return
+
+    bal = get_user_balance(ctx.author.id)
+    amount_val = resolve_bet(amount, bal)
+    if amount_val is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount_val <= 0:    await ctx.send("❌ Amount must be positive!"); return
+    if amount_val > bal:   await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+
+    try:
+        mins = int(minutes)
+        if mins < 1 or mins > 60: raise ValueError
+    except ValueError:
+        await ctx.send("❌ Minutes must be a whole number between 1 and 60."); return
+
+    req_wager   = 0
+    req_invites = 0
+    for arg in args:
+        lo = arg.lower()
+        if lo.startswith('wager:'):
+            try: req_wager   = int(arg.split(':')[1].replace(',', ''))
+            except: pass
+        elif lo.startswith('invites:'):
+            try: req_invites = int(arg.split(':')[1])
+            except: pass
+
+    set_user_balance(ctx.author.id, bal - amount_val)
+
+    duration = mins * 60
+    view = GiveawayView(ctx.author.id, amount_val, duration, req_wager, req_invites)
+
+    reqs = []
+    if req_wager   > 0: reqs.append(f"💰 Total wagered ≥ **R${req_wager:,}**")
+    if req_invites > 0: reqs.append(f"📨 Total invites ≥ **{req_invites}**")
+    reqs_str = "\n".join(reqs) if reqs else "✅ Open to everyone!"
+
+    embed = discord.Embed(
+        title="🎉  G I V E A W A Y",
+        description=(
+            f"**Prize:** 🏆 R${amount_val:,} points\n"
+            f"**Host:** {ctx.author.mention}\n\n"
+            f"**Requirements:**\n{reqs_str}\n\n"
+            f"⏳ Ends in **{mins} minute{'s' if mins != 1 else ''}** — press the button below to enter!"
+        ),
+        color=0xFFD700
+    )
+    embed.set_footer(text=f"0 entries  ·  {mins}m remaining")
+    msg = await ctx.send(embed=embed, view=view)
+
+    # Schedule countdown nudges
+    nudges = []
+    if mins >= 10: nudges.append((mins - 5,  "5 minutes"))
+    if mins >= 3:  nudges.append((mins - 1,  "1 minute"))
+    nudges.sort()
+
+    elapsed = 0
+    for at_min, label in nudges:
+        wait = at_min * 60 - elapsed
+        if wait > 0:
+            await asyncio.sleep(wait)
+            elapsed += wait
+        if not view.is_finished():
+            count = len(view.entrants)
+            embed.set_footer(text=f"{count} entr{'ies' if count != 1 else 'y'}  ·  ⚠️ {label} left!")
+            try: await msg.edit(embed=embed, view=view)
+            except: pass
+
+    remaining = duration - elapsed
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+
+    for item in view.children:
+        item.disabled = True
+
+    entrants = list(view.entrants)
+
+    if not entrants:
+        set_user_balance(ctx.author.id, get_user_balance(ctx.author.id) + amount_val)
+        embed = discord.Embed(
+            title="🎉 Giveaway Ended — No Entries",
+            description=f"Nobody entered. **R${amount_val:,}** refunded to {ctx.author.mention}.",
+            color=0xFF8800
+        )
+        try: await msg.edit(embed=embed, view=view)
+        except: pass
+        return
+
+    import random
+    winner_id  = random.choice(entrants)
+    prev_bal   = get_user_balance(winner_id)
+    set_user_balance(winner_id, prev_bal + amount_val)
+
+    try:    winner = await bot.fetch_user(winner_id)
+    except: winner = None
+    winner_str = winner.mention if winner else f"<@{winner_id}>"
+
+    embed = discord.Embed(
+        title="🎉 Giveaway Over!",
+        description=(
+            f"🏆 **Winner:** {winner_str}\n"
+            f"💰 **Prize:** R${amount_val:,} points\n"
+            f"👥 **Total Entries:** {len(entrants)}\n\n"
+            f"**New balance:** {fmt(prev_bal + amount_val)}"
+        ),
+        color=0xFFD700
+    )
+    embed.set_footer(text=f"Hosted by {ctx.author.name}  ·  {len(entrants)} entr{'ies' if len(entrants) != 1 else 'y'}")
+    try: await msg.edit(embed=embed, view=view)
+    except: pass
+    await ctx.send(f"🎊 Congratulations {winner_str}! You won **R${amount_val:,}** points!")
+
+@giveaway.error
+async def giveaway_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("🚫 Administrator permission required to start a giveaway!")
+    else:
+        await ctx.send("❌ Usage: `.giveaway <amount> <minutes> [wager:<min>] [invites:<min>]`")
 
 
 @bot.command(name='rank')
@@ -2038,6 +2208,7 @@ async def help_command(ctx):
     embed.add_field(name="🤝 Social", value=(
         "`.send @user <amt>` — Send points\n"
         "`.rain <amt>` — Rain points on joiners (2 min)\n"
+        "`.giveaway <amt> <mins> [wager:X] [invites:X]` — Admin giveaway\n"
         "`.clan <create/join/leave/info/top>` — Clan system\n"
         "`.thread` — Create a private thread"
     ), inline=False)
